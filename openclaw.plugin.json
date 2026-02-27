@@ -1,177 +1,60 @@
 {
   "id": "openclaw-mem0",
+  "name": "Mem0 Memory",
+  "description": "Persistent conversational memory via Mem0. Auto-captures context after each agent turn and auto-recalls relevant memories before responding.",
   "kind": "memory",
-  "uiHints": {
-    "mode": {
-      "label": "Mode",
-      "help": "\"platform\" for Mem0 cloud, \"open-source\" for self-hosted"
-    },
-    "apiKey": {
-      "label": "Mem0 API Key",
-      "sensitive": true,
-      "placeholder": "m0-...",
-      "help": "API key from app.mem0.ai (or use ${MEM0_API_KEY}). Only needed for platform mode."
-    },
-    "host": {
-      "label": "Mem0 API Host",
-      "placeholder": "https://api.mem0.ai",
-      "help": "Custom Mem0 API host URL. Defaults to https://api.mem0.ai. Set for self-hosted instances."
-    },
-    "userId": {
-      "label": "Default User ID",
-      "placeholder": "default",
-      "help": "User ID for scoping memories"
-    },
-    "orgId": {
-      "label": "Organization ID",
-      "placeholder": "org-...",
-      "advanced": true
-    },
-    "projectId": {
-      "label": "Project ID",
-      "placeholder": "proj-...",
-      "advanced": true
-    },
-    "autoCapture": {
-      "label": "Auto-Capture",
-      "help": "Automatically store conversation context after each agent turn"
-    },
-    "autoRecall": {
-      "label": "Auto-Recall",
-      "help": "Automatically inject relevant memories before each agent turn"
-    },
-    "customInstructions": {
-      "label": "Custom Instructions",
-      "placeholder": "Only store user preferences and important facts...",
-      "help": "Natural language rules for what Mem0 should store or exclude (platform mode)"
-    },
-    "customCategories": {
-      "label": "Custom Categories",
-      "advanced": true,
-      "help": "Map of category names to descriptions for memory tagging (platform mode only). Sensible defaults are built in."
-    },
-    "customPrompt": {
-      "label": "Custom Prompt (Open-Source)",
-      "advanced": true,
-      "help": "Custom prompt for open-source mode memory extraction."
-    },
-    "enableGraph": {
-      "label": "Enable Graph Memory",
-      "help": "Enable Mem0 graph memory for entity relationships (platform mode only)"
-    },
-    "searchThreshold": {
-      "label": "Search Threshold",
-      "placeholder": "0.5",
-      "help": "Minimum similarity score for search results (0-1). Default: 0.5"
-    },
-    "topK": {
-      "label": "Top K Results",
-      "placeholder": "5",
-      "help": "Maximum number of memories to retrieve"
-    },
-    "oss": {
-      "label": "Open-Source Configuration",
-      "advanced": true,
-      "help": "Optional. Configure custom embedder, vector store, LLM, or history DB for open-source mode. Has sensible defaults — only override what you need."
-    }
-  },
+  "version": "0.2.0",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
     "properties": {
-      "mode": {
-        "type": "string",
-        "enum": [
-          "platform",
-          "open-source",
-          "oss"
-        ]
-      },
       "apiKey": {
-        "type": "string"
+        "type": "string",
+        "description": "Mem0 API key for authenticating with the memory service."
       },
       "host": {
         "type": "string",
-        "description": "Custom Mem0 API host URL (defaults to https://api.mem0.ai). Use for self-hosted instances."
+        "description": "Mem0 API host URL. Defaults to https://api.mem0.ai — set this to your self-hosted instance URL."
       },
       "userId": {
-        "type": "string"
-      },
-      "orgId": {
-        "type": "string"
-      },
-      "projectId": {
-        "type": "string"
+        "type": "string",
+        "description": "User ID for scoping memories. Defaults to \"default\". Use a unique ID per org or instance to isolate memories."
       },
       "autoCapture": {
-        "type": "boolean"
+        "type": "boolean",
+        "description": "Automatically store conversation context after each agent turn. Defaults to true."
       },
       "autoRecall": {
-        "type": "boolean"
-      },
-      "customInstructions": {
-        "type": "string"
-      },
-      "customCategories": {
-        "type": "object",
-        "additionalProperties": {
-          "type": "string"
-        }
-      },
-      "customPrompt": {
-        "type": "string"
-      },
-      "enableGraph": {
-        "type": "boolean"
-      },
-      "searchThreshold": {
-        "type": "number"
-      },
-      "topK": {
-        "type": "number"
-      },
-      "oss": {
-        "type": "object",
-        "properties": {
-          "embedder": {
-            "type": "object",
-            "properties": {
-              "provider": {
-                "type": "string"
-              },
-              "config": {
-                "type": "object"
-              }
-            }
-          },
-          "vectorStore": {
-            "type": "object",
-            "properties": {
-              "provider": {
-                "type": "string"
-              },
-              "config": {
-                "type": "object"
-              }
-            }
-          },
-          "llm": {
-            "type": "object",
-            "properties": {
-              "provider": {
-                "type": "string"
-              },
-              "config": {
-                "type": "object"
-              }
-            }
-          },
-          "historyDbPath": {
-            "type": "string"
-          }
-        }
+        "type": "boolean",
+        "description": "Automatically inject relevant memories into context before each agent turn. Defaults to true."
       }
     },
-    "required": []
+    "required": ["apiKey", "host"]
+  },
+  "uiHints": {
+    "apiKey": {
+      "label": "Mem0 API Key",
+      "sensitive": true,
+      "placeholder": "m0-...",
+      "help": "API key for the Mem0 service. Supports ${MEM0_API_KEY} env var syntax."
+    },
+    "host": {
+      "label": "Mem0 API Host",
+      "placeholder": "https://mem.cxcoast.com",
+      "help": "Your self-hosted Mem0 API URL."
+    },
+    "userId": {
+      "label": "User ID",
+      "placeholder": "default",
+      "help": "Scopes memories to this user. Use org-slug or instance-name for isolation."
+    },
+    "autoCapture": {
+      "label": "Auto-Capture",
+      "help": "Automatically store conversation context after each agent turn."
+    },
+    "autoRecall": {
+      "label": "Auto-Recall",
+      "help": "Automatically inject relevant memories before each agent turn."
+    }
   }
 }
