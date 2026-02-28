@@ -132,7 +132,11 @@ class PlatformProvider implements Mem0Provider {
   private async ensureClient(): Promise<void> {
     if (this.client) return;
     if (this.initPromise) return this.initPromise;
-    this.initPromise = this._init();
+    this.initPromise = this._init().catch((err) => {
+      // Clear cached promise so transient failures (DNS, import) can retry
+      this.initPromise = null;
+      throw err;
+    });
     return this.initPromise;
   }
 
@@ -149,9 +153,11 @@ class PlatformProvider implements Mem0Provider {
       // the Mem0 cloud API (api.mem0.ai). Self-hosted instances behind reverse
       // proxies (e.g. Cloudflare) may expect "X-Api-Key" instead. Patch the
       // client headers to include both formats.
-      if (this.client.headers) {
-        this.client.headers["X-Api-Key"] = this.apiKey;
+      if (!this.client.headers) {
+        console.warn("openclaw-mem0: mem0ai client has no headers object; creating one");
+        this.client.headers = {};
       }
+      this.client.headers["X-Api-Key"] = this.apiKey;
 
       // The client's _initializeClient() pings /v1/ping/ on construction (async).
       // For self-hosted servers this ping fails (no /v1/ prefix or different auth),
@@ -174,7 +180,7 @@ class PlatformProvider implements Mem0Provider {
       opts.custom_instructions = options.custom_instructions;
     if (options.custom_categories)
       opts.custom_categories = options.custom_categories;
-    if (options.enable_graph) opts.enable_graph = options.enable_graph;
+    if (options.enable_graph != null) opts.enable_graph = options.enable_graph;
     if (options.output_format) opts.output_format = options.output_format;
     if (options.source) opts.source = options.source;
 
@@ -240,7 +246,10 @@ class OSSProvider implements Mem0Provider {
   private async ensureMemory(): Promise<void> {
     if (this.memory) return;
     if (this.initPromise) return this.initPromise;
-    this.initPromise = this._init();
+    this.initPromise = this._init().catch((err) => {
+      this.initPromise = null;
+      throw err;
+    });
     return this.initPromise;
   }
 
@@ -362,7 +371,7 @@ function normalizeAddResult(raw: any): AddResult {
         memory: r.memory ?? r.text ?? "",
         // Platform API may return PENDING status (async processing)
         // OSS stores event in metadata.event
-        event: r.event ?? r.metadata?.event ?? (r.status === "PENDING" ? "ADD" : "ADD"),
+        event: r.event ?? r.metadata?.event ?? "ADD",
       })),
     };
   }
@@ -372,7 +381,7 @@ function normalizeAddResult(raw: any): AddResult {
       results: raw.map((r: any) => ({
         id: r.id ?? r.memory_id ?? "",
         memory: r.memory ?? r.text ?? "",
-        event: r.event ?? r.metadata?.event ?? (r.status === "PENDING" ? "ADD" : "ADD"),
+        event: r.event ?? r.metadata?.event ?? "ADD",
       })),
     };
   }
@@ -645,14 +654,10 @@ const memoryPlugin = {
     const cfg = mem0ConfigSchema.parse(api.pluginConfig);
     const provider = createProvider(cfg, api);
 
-    // Track current session ID for tool-level session scoping
-    let currentSessionId: string | undefined;
-
     // Derive a per-agent userId from the session key.
     // sessionKey format: "agent:{agentName}:{sessionType}"
     // Result: "{cfg.userId}:{agentName}" — scopes memories per agent instance,
     // preventing cross-contamination between agents in the same org.
-    let resolvedUserId = cfg.userId;
     function resolveUserId(sessionKey?: string): string {
       if (sessionKey) {
         const parts = sessionKey.split(":");
@@ -663,34 +668,39 @@ const memoryPlugin = {
       return cfg.userId;
     }
 
+    // Best-effort session context for tools (which don't receive ctx).
+    // Set by lifecycle hooks. Tools should prefer their explicit userId
+    // param over this. Only read synchronously — never after an await.
+    let _lastSessionKey: string | undefined;
+
     api.logger.info(
       `openclaw-mem0: registered (mode: ${cfg.mode}, user: ${cfg.userId}, graph: ${cfg.enableGraph}, autoRecall: ${cfg.autoRecall}, autoCapture: ${cfg.autoCapture})`,
     );
 
-    // Helper: build add options
-    function buildAddOptions(userIdOverride?: string, runId?: string): AddOptions {
+    // Helper: build add options — userId is always explicit, never from shared state
+    function buildAddOptions(userId: string, runId?: string): AddOptions {
       const opts: AddOptions = {
-        user_id: userIdOverride || resolvedUserId,
+        user_id: userId,
         source: "OPENCLAW",
       };
       if (runId) opts.run_id = runId;
       if (cfg.mode === "platform") {
         opts.custom_instructions = cfg.customInstructions;
         opts.custom_categories = categoriesToArray(cfg.customCategories);
-        opts.enable_graph = cfg.enableGraph;
+        if (cfg.enableGraph != null) opts.enable_graph = cfg.enableGraph;
         opts.output_format = "v1.1";
       }
       return opts;
     }
 
-    // Helper: build search options
+    // Helper: build search options — userId is always explicit, never from shared state
     function buildSearchOptions(
-      userIdOverride?: string,
+      userId: string,
       limit?: number,
       runId?: string,
     ): SearchOptions {
       const opts: SearchOptions = {
-        user_id: userIdOverride || resolvedUserId,
+        user_id: userId,
         top_k: limit ?? cfg.topK,
         limit: limit ?? cfg.topK,
         threshold: cfg.searchThreshold,
@@ -744,32 +754,36 @@ const memoryPlugin = {
             scope?: "session" | "long-term" | "all";
           };
 
+          // Resolve userId and sessionId locally (snapshot, not shared state)
+          const localUserId = userId || resolveUserId(_lastSessionKey);
+          const localSessionId = _lastSessionKey;
+
           try {
             let results: MemoryItem[] = [];
 
             if (scope === "session") {
-              if (currentSessionId) {
+              if (localSessionId) {
                 results = await provider.search(
                   query,
-                  buildSearchOptions(userId, limit, currentSessionId),
+                  buildSearchOptions(localUserId, limit, localSessionId),
                 );
               }
             } else if (scope === "long-term") {
               results = await provider.search(
                 query,
-                buildSearchOptions(userId, limit),
+                buildSearchOptions(localUserId, limit),
               );
             } else {
               // "all" — search both scopes and combine
               const longTermResults = await provider.search(
                 query,
-                buildSearchOptions(userId, limit),
+                buildSearchOptions(localUserId, limit),
               );
               let sessionResults: MemoryItem[] = [];
-              if (currentSessionId) {
+              if (localSessionId) {
                 sessionResults = await provider.search(
                   query,
-                  buildSearchOptions(userId, limit, currentSessionId),
+                  buildSearchOptions(localUserId, limit, localSessionId),
                 );
               }
               // Deduplicate by ID, preferring long-term
@@ -862,11 +876,15 @@ const memoryPlugin = {
             longTerm?: boolean;
           };
 
+          // Resolve locally — snapshot before any await
+          const localUserId = userId || resolveUserId(_lastSessionKey);
+          const localSessionId = _lastSessionKey;
+
           try {
-            const runId = !longTerm && currentSessionId ? currentSessionId : undefined;
+            const runId = !longTerm && localSessionId ? localSessionId : undefined;
             const result = await provider.add(
               [{ role: "user", content: text }],
-              buildAddOptions(userId, runId),
+              buildAddOptions(localUserId, runId),
             );
 
             const added =
@@ -980,15 +998,18 @@ const memoryPlugin = {
         async execute(_toolCallId, params) {
           const { userId, scope = "all" } = params as { userId?: string; scope?: "session" | "long-term" | "all" };
 
+          // Resolve locally — snapshot before any await
+          const uid = userId || resolveUserId(_lastSessionKey);
+          const localSessionId = _lastSessionKey;
+
           try {
             let memories: MemoryItem[] = [];
-            const uid = userId || resolvedUserId;
 
             if (scope === "session") {
-              if (currentSessionId) {
+              if (localSessionId) {
                 memories = await provider.getAll({
                   user_id: uid,
-                  run_id: currentSessionId,
+                  run_id: localSessionId,
                   source: "OPENCLAW",
                 });
               }
@@ -998,10 +1019,10 @@ const memoryPlugin = {
               // "all" — combine both scopes
               const longTerm = await provider.getAll({ user_id: uid, source: "OPENCLAW" });
               let session: MemoryItem[] = [];
-              if (currentSessionId) {
+              if (localSessionId) {
                 session = await provider.getAll({
                   user_id: uid,
-                  run_id: currentSessionId,
+                  run_id: localSessionId,
                   source: "OPENCLAW",
                 });
               }
@@ -1082,6 +1103,9 @@ const memoryPlugin = {
             memoryId?: string;
           };
 
+          // Resolve locally — snapshot before any await
+          const localUserId = resolveUserId(_lastSessionKey);
+
           try {
             if (memoryId) {
               await provider.delete(memoryId);
@@ -1096,7 +1120,7 @@ const memoryPlugin = {
             if (query) {
               const results = await provider.search(
                 query,
-                buildSearchOptions(undefined, 5),
+                buildSearchOptions(localUserId, 5),
               );
 
               if (!results || results.length === 0) {
@@ -1108,10 +1132,10 @@ const memoryPlugin = {
                 };
               }
 
-              // If single high-confidence match, delete directly
+              // Only auto-delete if single result AND high confidence
               if (
-                results.length === 1 ||
-                (results[0].score ?? 0) > 0.9
+                results.length === 1 &&
+                (results[0].score ?? 0) > 0.7
               ) {
                 await provider.delete(results[0].id);
                 return {
@@ -1191,14 +1215,15 @@ const memoryPlugin = {
             try {
               const limit = parseInt(opts.limit, 10);
               const scope = opts.scope as "session" | "long-term" | "all";
+              const cliUserId = resolveUserId(_lastSessionKey);
 
               let allResults: MemoryItem[] = [];
 
               if (scope === "session" || scope === "all") {
-                if (currentSessionId) {
+                if (_lastSessionKey) {
                   const sessionResults = await provider.search(
                     query,
-                    buildSearchOptions(undefined, limit, currentSessionId),
+                    buildSearchOptions(cliUserId, limit, _lastSessionKey),
                   );
                   if (sessionResults?.length) {
                     allResults.push(...sessionResults.map((r) => ({ ...r, _scope: "session" as const })));
@@ -1212,7 +1237,7 @@ const memoryPlugin = {
               if (scope === "long-term" || scope === "all") {
                 const longTermResults = await provider.search(
                   query,
-                  buildSearchOptions(undefined, limit),
+                  buildSearchOptions(cliUserId, limit),
                 );
                 if (longTermResults?.length) {
                   allResults.push(...longTermResults.map((r) => ({ ...r, _scope: "long-term" as const })));
@@ -1253,12 +1278,13 @@ const memoryPlugin = {
           .description("Show memory statistics from Mem0")
           .action(async () => {
             try {
+              const statsUserId = resolveUserId(_lastSessionKey);
               const memories = await provider.getAll({
-                user_id: resolvedUserId,
+                user_id: statsUserId,
                 source: "OPENCLAW",
               });
               console.log(`Mode: ${cfg.mode}`);
-              console.log(`User: ${resolvedUserId} (base: ${cfg.userId})`);
+              console.log(`User: ${statsUserId} (base: ${cfg.userId})`);
               console.log(
                 `Total memories: ${Array.isArray(memories) ? memories.length : "unknown"}`,
               );
@@ -1283,26 +1309,25 @@ const memoryPlugin = {
       api.on("before_agent_start", async (event, ctx) => {
         if (!event.prompt || event.prompt.length < 5) return;
 
-        // Track session ID and resolve per-agent userId
-        const sessionId = (ctx as any)?.sessionKey ?? undefined;
-        if (sessionId) {
-          currentSessionId = sessionId;
-          resolvedUserId = resolveUserId(sessionId);
-        }
+        // Capture local copies — never read shared state after an await
+        const localSessionKey = (ctx as any)?.sessionKey ?? undefined;
+        const localUserId = resolveUserId(localSessionKey);
+        // Update best-effort hint for tools (synchronous, before any await)
+        if (localSessionKey) _lastSessionKey = localSessionKey;
 
         try {
           // Search long-term memories (user-scoped)
           const longTermResults = await provider.search(
             event.prompt,
-            buildSearchOptions(),
+            buildSearchOptions(localUserId),
           );
 
           // Search session memories (session-scoped) if we have a session ID
           let sessionResults: MemoryItem[] = [];
-          if (currentSessionId) {
+          if (localSessionKey) {
             sessionResults = await provider.search(
               event.prompt,
-              buildSearchOptions(undefined, undefined, currentSessionId),
+              buildSearchOptions(localUserId, undefined, localSessionKey),
             );
           }
 
@@ -1353,12 +1378,10 @@ const memoryPlugin = {
           return;
         }
 
-        // Track session ID and resolve per-agent userId
-        const sessionId = (ctx as any)?.sessionKey ?? undefined;
-        if (sessionId) {
-          currentSessionId = sessionId;
-          resolvedUserId = resolveUserId(sessionId);
-        }
+        // Capture local copies — never read shared state after an await
+        const localSessionKey = (ctx as any)?.sessionKey ?? undefined;
+        const localUserId = resolveUserId(localSessionKey);
+        if (localSessionKey) _lastSessionKey = localSessionKey;
 
         try {
           // Extract messages, limiting to last 10
@@ -1404,7 +1427,7 @@ const memoryPlugin = {
             textContent = textContent.replace(/<tool_call>[\s\S]*?<\/tool_call>\s*/g, "").trim();
             textContent = textContent.replace(/<tool_result>[\s\S]*?<\/tool_result>\s*/g, "").trim();
             // 3. Collapse large code blocks to just their language tag
-            textContent = textContent.replace(/```[\w]*\n[\s\S]{500,}?```/g, "[code block]").trim();
+            textContent = textContent.replace(/```\w*\n(?:(?!```)[\s\S]){500,}?```/g, "[code block]").trim();
             // 4. Strip control characters that can corrupt JSON encoding
             textContent = textContent.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
 
@@ -1424,7 +1447,7 @@ const memoryPlugin = {
 
           if (formattedMessages.length === 0) return;
 
-          const addOpts = buildAddOptions(undefined, currentSessionId);
+          const addOpts = buildAddOptions(localUserId, localSessionKey);
           const result = await provider.add(
             formattedMessages,
             addOpts,
