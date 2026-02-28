@@ -1396,22 +1396,25 @@ const memoryPlugin = {
             }
 
             if (!textContent) continue;
-            // Strip injected memory context, keep the actual user text
-            if (textContent.includes("<relevant-memories>")) {
-              textContent = textContent.replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>\s*/g, "").trim();
-              if (!textContent) continue;
-            }
 
-            // Truncate long messages to prevent JSON parsing errors on the
-            // server (agent responses with tool output/code can be huge).
-            // 4000 chars per message keeps the total payload well under limits.
-            const MAX_MSG_CHARS = 4000;
-            if (textContent.length > MAX_MSG_CHARS) {
-              textContent = textContent.slice(0, MAX_MSG_CHARS) + "\n[truncated]";
-            }
-
-            // Strip control characters that can break JSON parsing in transit
+            // Clean content for memory extraction:
+            // 1. Strip injected memory context (recall output)
+            textContent = textContent.replace(/<relevant-memories>[\s\S]*?<\/relevant-memories>\s*/g, "").trim();
+            // 2. Strip raw tool call/output blocks (noise for memory extraction)
+            textContent = textContent.replace(/<tool_call>[\s\S]*?<\/tool_call>\s*/g, "").trim();
+            textContent = textContent.replace(/<tool_result>[\s\S]*?<\/tool_result>\s*/g, "").trim();
+            // 3. Collapse large code blocks to just their language tag
+            textContent = textContent.replace(/```[\w]*\n[\s\S]{500,}?```/g, "[code block]").trim();
+            // 4. Strip control characters that can corrupt JSON encoding
             textContent = textContent.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+
+            if (!textContent) continue;
+
+            // Safety cap: if still over 8000 chars after cleaning, truncate.
+            // This is generous — cleaned conversational text rarely exceeds this.
+            if (textContent.length > 8000) {
+              textContent = textContent.slice(0, 8000) + "\n[truncated]";
+            }
 
             formattedMessages.push({
               role: role as string,
