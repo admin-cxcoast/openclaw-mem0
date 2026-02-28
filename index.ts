@@ -648,6 +648,21 @@ const memoryPlugin = {
     // Track current session ID for tool-level session scoping
     let currentSessionId: string | undefined;
 
+    // Derive a per-agent userId from the session key.
+    // sessionKey format: "agent:{agentName}:{sessionType}"
+    // Result: "{cfg.userId}:{agentName}" — scopes memories per agent instance,
+    // preventing cross-contamination between agents in the same org.
+    let resolvedUserId = cfg.userId;
+    function resolveUserId(sessionKey?: string): string {
+      if (sessionKey) {
+        const parts = sessionKey.split(":");
+        if (parts.length >= 2 && parts[0] === "agent") {
+          return `${cfg.userId}:${parts[1]}`;
+        }
+      }
+      return cfg.userId;
+    }
+
     api.logger.info(
       `openclaw-mem0: registered (mode: ${cfg.mode}, user: ${cfg.userId}, graph: ${cfg.enableGraph}, autoRecall: ${cfg.autoRecall}, autoCapture: ${cfg.autoCapture})`,
     );
@@ -655,7 +670,7 @@ const memoryPlugin = {
     // Helper: build add options
     function buildAddOptions(userIdOverride?: string, runId?: string): AddOptions {
       const opts: AddOptions = {
-        user_id: userIdOverride || cfg.userId,
+        user_id: userIdOverride || resolvedUserId,
         source: "OPENCLAW",
       };
       if (runId) opts.run_id = runId;
@@ -675,7 +690,7 @@ const memoryPlugin = {
       runId?: string,
     ): SearchOptions {
       const opts: SearchOptions = {
-        user_id: userIdOverride || cfg.userId,
+        user_id: userIdOverride || resolvedUserId,
         top_k: limit ?? cfg.topK,
         limit: limit ?? cfg.topK,
         threshold: cfg.searchThreshold,
@@ -967,7 +982,7 @@ const memoryPlugin = {
 
           try {
             let memories: MemoryItem[] = [];
-            const uid = userId || cfg.userId;
+            const uid = userId || resolvedUserId;
 
             if (scope === "session") {
               if (currentSessionId) {
@@ -1239,11 +1254,11 @@ const memoryPlugin = {
           .action(async () => {
             try {
               const memories = await provider.getAll({
-                user_id: cfg.userId,
+                user_id: resolvedUserId,
                 source: "OPENCLAW",
               });
               console.log(`Mode: ${cfg.mode}`);
-              console.log(`User: ${cfg.userId}`);
+              console.log(`User: ${resolvedUserId} (base: ${cfg.userId})`);
               console.log(
                 `Total memories: ${Array.isArray(memories) ? memories.length : "unknown"}`,
               );
@@ -1268,9 +1283,12 @@ const memoryPlugin = {
       api.on("before_agent_start", async (event, ctx) => {
         if (!event.prompt || event.prompt.length < 5) return;
 
-        // Track session ID
+        // Track session ID and resolve per-agent userId
         const sessionId = (ctx as any)?.sessionKey ?? undefined;
-        if (sessionId) currentSessionId = sessionId;
+        if (sessionId) {
+          currentSessionId = sessionId;
+          resolvedUserId = resolveUserId(sessionId);
+        }
 
         try {
           // Search long-term memories (user-scoped)
@@ -1335,9 +1353,12 @@ const memoryPlugin = {
           return;
         }
 
-        // Track session ID
+        // Track session ID and resolve per-agent userId
         const sessionId = (ctx as any)?.sessionKey ?? undefined;
-        if (sessionId) currentSessionId = sessionId;
+        if (sessionId) {
+          currentSessionId = sessionId;
+          resolvedUserId = resolveUserId(sessionId);
+        }
 
         try {
           // Extract messages, limiting to last 10
