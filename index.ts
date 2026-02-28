@@ -1402,6 +1402,17 @@ const memoryPlugin = {
               if (!textContent) continue;
             }
 
+            // Truncate long messages to prevent JSON parsing errors on the
+            // server (agent responses with tool output/code can be huge).
+            // 4000 chars per message keeps the total payload well under limits.
+            const MAX_MSG_CHARS = 4000;
+            if (textContent.length > MAX_MSG_CHARS) {
+              textContent = textContent.slice(0, MAX_MSG_CHARS) + "\n[truncated]";
+            }
+
+            // Strip control characters that can break JSON parsing in transit
+            textContent = textContent.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, "");
+
             formattedMessages.push({
               role: role as string,
               content: textContent,
