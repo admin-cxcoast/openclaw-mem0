@@ -143,6 +143,15 @@ class PlatformProvider implements Mem0Provider {
     if (this.orgId) opts.org_id = this.orgId;
     if (this.projectId) opts.project_id = this.projectId;
     this.client = new MemoryClient(opts);
+
+    // The mem0ai client sends "Authorization: Token <key>" which works for
+    // the Mem0 cloud API (api.mem0.ai). Self-hosted instances behind reverse
+    // proxies (e.g. Cloudflare) may expect "X-Api-Key" instead. When a custom
+    // host is set, patch the client headers to include both formats so the
+    // request is accepted regardless of the auth mechanism.
+    if (this.host && this.client.headers) {
+      this.client.headers["X-Api-Key"] = this.apiKey;
+    }
   }
 
   async add(
